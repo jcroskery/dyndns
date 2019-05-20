@@ -4,11 +4,21 @@
 
 #include <curl/curl.h> //You must link the libcurl library or the code will fail to link
 
-//To use this program, you must pass at least 3 command line arguments
-//The first: Your Cloudflare account's email address, e.g. "X-Auth-Email: youremail@example.com"
-//The second: Your 32 digit Cloudflare API key, e.g. "X-Auth-Key: 00000000000000000000000000000000"
-//The third: Domain names you wish to update with your IP, e.g. "olmmcc.tk"
-//Other arguments will be treated in the same way as the third argument
+/*
+To use this program, you must pass at least 4 command line arguments:
+
+The first: Whether you want to use the caching feature of this program to cache your Cloudflare zone id and record id(s).
+A value of 0 means "do not cache" and a value of 1 means "cache".
+If you are using caching and the cache is corrupted or the domain argument(s) passed to the program change, then the program will delete the cache and regenerate it.
+
+The second: Your Cloudflare account's email address, e.g. "X-Auth-Email: youremail@example.com".
+
+The third: Your 32 digit Cloudflare API key, e.g. "X-Auth-Key: 00000000000000000000000000000000".
+
+The fourth: Domain name you wish to update with your IP, e.g. "example.com" or "www.example.com".
+
+Other arguments will be treated in the same way as the fourth argument.
+*/
 
 struct Result
 {
@@ -22,7 +32,7 @@ struct UploadData
     size_t sizeOfRemainder;
 };
 
-static size_t GetResult(void *contents, size_t sizeOfMembers, size_t numberOfMembers, void *myPointer)
+size_t GetResult(void *contents, size_t sizeOfMembers, size_t numberOfMembers, void *myPointer)
 {
     size_t realSize = sizeOfMembers * numberOfMembers;
     struct Result *returnStruct = (struct Result *)myPointer;
@@ -33,7 +43,7 @@ static size_t GetResult(void *contents, size_t sizeOfMembers, size_t numberOfMem
 
     return realSize; //For some reason this must be returned
 }
-CURLcode submitCurlRequest(CURL* curl, struct Result* requestResult)
+static CURLcode submitCurlRequest(CURL* curl, struct Result* requestResult)
 {
     requestResult->memory = malloc(1);
     requestResult->sizeOfMemory = 0;
@@ -57,69 +67,117 @@ int main(int argc, char *argv[])
     curl_global_init(CURL_GLOBAL_ALL);
     CURL *curl = curl_easy_init();
     struct curl_slist *list = NULL;
-    list = curl_slist_append(list, argv[1]);
     list = curl_slist_append(list, argv[2]);
+    list = curl_slist_append(list, argv[3]);
     list = curl_slist_append(list, "Content-Type: application/json");
 
     curl_easy_setopt(curl, CURLOPT_URL, "https://ipecho.net/plain");
     struct Result ip;
     submitCurlRequest(curl, &ip);
 
-    char* url = malloc(1024);
-    sprintf(url, "https://api.cloudflare.com/client/v4/zones/");
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
-    struct Result zoneIdRequest;
-    submitCurlRequest(curl, &zoneIdRequest);
-    sprintf(url + strlen(url), "%.32s/dns_records", strstr(zoneIdRequest.memory, "id") + 5);
-    free(zoneIdRequest.memory);
-    for(int i = 3; i < argc; i++)
+    char baseUrl[1024] = "https://api.cloudflare.com/client/v4/zones/";
+    char* requestUrl[argc-4];
+    for(int i = 4; i < argc; i++)
     {
-        char* requestUrl = malloc(1024);
-        sprintf(requestUrl, "%s?type=A&name=%s", url, argv[i]);
+        requestUrl[i-4] = malloc(1024);
+    }
+
+    int baseFilePathLength = strrchr(argv[0], '/') - argv[0];
+    char* filepath = malloc(baseFilePathLength + 100);
+    sprintf(filepath, "%.*s/.dyndnsCache", baseFilePathLength, argv[0]);
+    FILE *cache = fopen(filepath, "r");
+    if(!cache || *argv[1] == '0')
+    {
+        noCache:
+        curl_easy_setopt(curl, CURLOPT_URL, baseUrl);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+        struct Result zoneIdRequest;
+        submitCurlRequest(curl, &zoneIdRequest);
+        sprintf(baseUrl + strlen(baseUrl), "%.32s/dns_records", strstr(zoneIdRequest.memory, "id") + 5);
+        free(zoneIdRequest.memory);
+        for(int i = 4; i < argc; i++)
+        {
+            sprintf(requestUrl[i-4], "%s?type=A&name=%s", baseUrl, argv[i]);
+            curl_easy_setopt(curl, CURLOPT_URL, requestUrl[i-4]);
+            struct Result recordIdRequest;
+            submitCurlRequest(curl, &recordIdRequest);
+            sprintf(requestUrl[i-4], "%s/%.32s", baseUrl, strstr(recordIdRequest.memory, "id") + 5);
+            free(recordIdRequest.memory);
+        }
+        if(*argv[1] != '0')
+        {
+            printf("Creating new cache file.\n");
+            cache = fopen(filepath, "w");
+            for(int i = 4; i < argc; i++)
+            {
+                fprintf(cache, "%s\n", requestUrl[i-4]);
+            }
+        }
+    }
+    else
+    {
+        printf("Reading from cache file.\n");
+        for(int i = 4; i < argc; i++)
+        {
+            fscanf(cache,"%s[^\n]", requestUrl[i-4]);
+        }
+    }
+    fclose(cache);
+    for(int i = 4; i < argc; i++)
+    {
         curl_easy_reset(curl);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
-        curl_easy_setopt(curl, CURLOPT_URL, requestUrl);
-        struct Result recordIdRequest;
-        submitCurlRequest(curl, &recordIdRequest);
-        sprintf(requestUrl, "%s/%.32s", url, strstr(recordIdRequest.memory, "id") + 5);
-        free(recordIdRequest.memory);
-
-        curl_easy_setopt(curl, CURLOPT_URL, requestUrl);
+        curl_easy_setopt(curl, CURLOPT_URL, requestUrl[i-4]);
         struct Result cloudflareIpRequest;
         submitCurlRequest(curl, &cloudflareIpRequest);
-
-        char cloudflareIp[16];
-        char* beginningOfCloudflareIp = strstr(cloudflareIpRequest.memory, "content") + 10;
-        sprintf(cloudflareIp, "%.*s", (int) (strstr(beginningOfCloudflareIp, "\"") - beginningOfCloudflareIp), strstr(cloudflareIpRequest.memory, "content") + 10);
-        free(cloudflareIpRequest.memory);
-        if(!strcmp(ip.memory, cloudflareIp)) //strcmp return 0 if the strings match, so negate it
+        char* quotedArg = malloc(strlen(argv[i]) + 10);
+        sprintf(quotedArg, "\"name\":\"%s\"", argv[i]);
+        if(strstr(cloudflareIpRequest.memory, "\"success\":false") || !strstr(cloudflareIpRequest.memory, quotedArg))  //Check if file is corrupted or program arguments have changed
         {
-            printf("The IP address for %s is up to date.\n", argv[i]);
+            printf("The cache file is outdated or corrupted. Regenerating cache file and retrying.\n");
+            free(quotedArg);
+            free(cloudflareIpRequest.memory); //Free our memory before exiting!
+            remove(filepath);
+            goto noCache; //Retry
         }
         else
         {
-            struct UploadData uploadJSON;
-            uploadJSON.memory = malloc(100+strlen(argv[i]));
-            sprintf(uploadJSON.memory, "{\"type\":\"A\",\"name\":\"%s\",\"content\":\"%s\",\"proxied\":false}", argv[i], ip.memory);
-            uploadJSON.sizeOfMemory = uploadJSON.sizeOfRemainder = strlen(uploadJSON.memory);
-            curl_easy_setopt(curl, CURLOPT_READDATA, &uploadJSON);
-            curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
-            curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
-            curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, uploadJSON.sizeOfMemory);
-            struct Result ipChangeResult;
-            submitCurlRequest(curl, &ipChangeResult);
-            printf("The IP for %s has been successfully updated.\n", argv[i]);
-            free(uploadJSON.memory - uploadJSON.sizeOfMemory);
-            free(ipChangeResult.memory);
+            char cloudflareIp[16];
+            char* beginningOfCloudflareIp = strstr(cloudflareIpRequest.memory, "content") + 10;
+            sprintf(cloudflareIp, "%.*s", (int) (strstr(beginningOfCloudflareIp, "\"") - beginningOfCloudflareIp), strstr(cloudflareIpRequest.memory, "content") + 10);
+            free(cloudflareIpRequest.memory);
+            free(quotedArg);
+            if(!strcmp(ip.memory, cloudflareIp)) //strcmp returns 0 if the strings match, so negate it
+            {
+                printf("The IP address for %s is up to date.\n", argv[i]);
+            }
+            else
+            {
+                struct UploadData uploadJSON;
+                uploadJSON.memory = malloc(100+strlen(argv[i]));
+                sprintf(uploadJSON.memory, "{\"type\":\"A\",\"name\":\"%s\",\"content\":\"%s\",\"proxied\":false}", argv[i], ip.memory);
+                uploadJSON.sizeOfMemory = uploadJSON.sizeOfRemainder = strlen(uploadJSON.memory);
+                curl_easy_setopt(curl, CURLOPT_READDATA, &uploadJSON);
+                curl_easy_setopt(curl, CURLOPT_READFUNCTION, read_callback);
+                curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+                curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, uploadJSON.sizeOfMemory);
+                struct Result ipChangeResult;
+                submitCurlRequest(curl, &ipChangeResult);
+                printf("The IP for %s has been successfully updated.\n", argv[i]);
+                free(uploadJSON.memory - uploadJSON.sizeOfMemory);
+                free(ipChangeResult.memory);
+            }
         }
-        free(requestUrl);
+
     }
-    free(url);
+    for(int i = 4; i < argc; i++)  //Free all memory still in use
+    {
+        free(requestUrl[i-4]);
+    }
+    free(filepath);
     free(ip.memory);
     curl_slist_free_all(list);
     curl_easy_cleanup(curl);
     curl_global_cleanup();
-    //End of program automatically frees variables
     return 0;
 }
