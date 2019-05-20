@@ -100,8 +100,8 @@ int main(int argc, char *argv[])
     int baseFilePathLength = strrchr(argv[0], '/') - argv[0];
     char* filepath = malloc(baseFilePathLength + 100);
     sprintf(filepath, "%.*s/.dyndnsCache", baseFilePathLength, argv[0]);
-    FILE *cache = fopen(filepath, "r");
-    if(!cache || *argv[1] == '0')
+    FILE *readFromCache = fopen(filepath, "r");
+    if(*argv[1] == '0' || !readFromCache)
     {
         noCache:
         curl_easy_setopt(curl, CURLOPT_URL, baseUrl);
@@ -122,11 +122,12 @@ int main(int argc, char *argv[])
         if(*argv[1] != '0')
         {
             printf("Creating new cache file.\n");
-            cache = fopen(filepath, "w");
+            FILE* writeToCache = fopen(filepath, "w");
             for(int i = 4; i < argc; i++)
             {
-                fprintf(cache, "%s\n", requestUrl[i-4]);
+                fprintf(writeToCache, "%s\n", requestUrl[i-4]);
             }
+            fclose(writeToCache);
         }
     }
     else
@@ -134,10 +135,10 @@ int main(int argc, char *argv[])
         printf("Reading from cache file.\n");
         for(int i = 4; i < argc; i++)
         {
-            fscanf(cache,"%s[^\n]", requestUrl[i-4]);
+            fscanf(readFromCache,"%s[^\n]", requestUrl[i-4]);
         }
+        fclose(readFromCache);
     }
-    fclose(cache);
     for(int i = 4; i < argc; i++)
     {
         curl_easy_reset(curl);
